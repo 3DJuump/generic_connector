@@ -1,0 +1,30 @@
+{
+	"id" : "com.3djuump:defaultsettings",
+	"ts" : 0,
+	"type" : "projectdocument",
+	"subtype" : "defaultsettings",
+	"version" : "9.1",
+	"profiles" : [],
+	"settings" : {
+		"frameorientation" : {
+			"dir" : [-1, 0, 0],
+			"up" : [0, 0, 1]
+		},
+		"fieldofview" : {
+			"degree" : 25,
+			"orientation" : "vertical"
+		},
+		"dynamiclowdefprofiles": {
+			"standard":1048576,
+			"high":2097152
+		}
+	},
+	"tasksettings" : {
+		"PresentationTask" : {
+			"aspectratio" : [
+				16,
+				9
+			]
+		}
+	}
+}
