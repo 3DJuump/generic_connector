@@ -1,0 +1,14 @@
+{
+	"id": "com.3djuump:indexmapping",
+	"type": "projectdocument",
+	"subtype": "indexmapping",
+	"version": "9.1",
+	"metadatamapping": {
+		"dynamic": "true",
+		"properties": {
+		}
+	},
+	"dynamic_templates": [
+	],
+	"ts": 1
+}
