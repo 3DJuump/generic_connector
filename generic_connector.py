@@ -77,9 +77,9 @@ if __name__ == '__main__':
 		lConverter.addDocument('./docs')
 		
 		# process CatProducts/CatPart
-		lRootId = lConverter.convert([v for v in lXRefResolver ],True)[0]
+		lConverter.convert([v for v in lXRefResolver ],True)
 		
-		lDefaultBuildParameters['buildparameters']['rootstructuredocid'] = lRootId
+		lDefaultBuildParameters['buildparameters']['rootstructuredocid'] = 'root'
 		lDefaultBuildParameters['buildparameters']['tags'] = ['L&G']
 		lDefaultBuildParameters['buildparameters']['defaultgeometrysettings']['backfaceculling'] = 'none'
 		lConverter.addDocument(lDefaultBuildParameters)
