@@ -21,7 +21,20 @@ import csv
 import re
 import logging, logging.handlers
 
+class GenericPsCustomizer (PsCustomizer):
+	def __init__(self, pLogger, pRemoveInstanciationAndBakeXForms):
+		PsCustomizer.__init__(self,pLogger)
+		self.__mRemoveInstanciationAndBakeXForms = pRemoveInstanciationAndBakeXForms
 
+	def computeExtractSettings(self, pFileName):
+		lRes = PsCustomizer.computeExtractSettings(self,pFileName)
+		lRes['removeinstanciationandbakexforms'] = self.__mRemoveInstanciationAndBakeXForms
+
+		return lRes
+		
+	def processConvResult(self, pDocsMap, pRootId, pSourceFilePath):
+		PsCustomizer.processConvResult(self, pDocsMap, pRootId, pSourceFilePath)
+	
 ## MAIN
 if __name__ == '__main__':
 	# Retrieve arguments
@@ -64,12 +77,12 @@ if __name__ == '__main__':
 	lPsConverterSettings.echo(lLogger)
 	
 	# customization
-	lPsCustomizer = PsCustomizer(lLogger)
+	lPsCustomizer = GenericPsCustomizer(lLogger,lJson['removeinstanciationandbakexforms'])
 	lXRefResolver = FileSystemXRefResolver(lJson['rootfolder'],os.path.join(lConverterSettings.cacheFolder,'xrefs.json'),lLogger)
 	
 	with Converter3dji(lConverterSettings,lPsCustomizer,lXRefResolver,[PsConverter(lPsConverterSettings,lConverterSettings,lLogger)],lLogger) as lConverter:
 		
-		lDefaultBuildParameters = lConverter.getDefaultBuildParameters()
+		lDefaultBuildParameters = lConverter.getDefaultBuildParameters(lJson['scalefactortomillimeters'])
 		
 
 
@@ -77,11 +90,12 @@ if __name__ == '__main__':
 		lConverter.addDocument('./docs')
 		
 		# process CatProducts/CatPart
-		lConverter.convert([v for v in lXRefResolver ],True)
+		lRootIds = lConverter.convert([v for v in lXRefResolver ],True)
 		
-		lDefaultBuildParameters['buildparameters']['rootstructuredocid'] = 'root'
-		lDefaultBuildParameters['buildparameters']['tags'] = ['L&G']
+		lDefaultBuildParameters['buildparameters']['rootstructuredocid'] = lRootIds[0]
+		lDefaultBuildParameters['buildparameters']['tags'] = lJson['tags']
 		lDefaultBuildParameters['buildparameters']['defaultgeometrysettings']['backfaceculling'] = 'none'
+		lDefaultBuildParameters['buildparameters']['buildcomment'] = os.path.split(lJson['rootfolder'])[1]
 		lConverter.addDocument(lDefaultBuildParameters)
 
 		lConverter.triggerBuild(lDefaultBuildParameters['id'],False)

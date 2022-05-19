@@ -17,5 +17,8 @@
 		"psConverterExe": "./PsConverter/PsConverter.exe",
 		"directoryApiUrl":"https://xxxx:yyyy@host:443/directory"
 	},
-	"rootfolder": "./source"
+	"rootfolder": "./source",
+	"tags":["GenericConnector"],
+	"removeinstanciationandbakexforms":false,
+    "scalefactortomillimeters":1
 }
