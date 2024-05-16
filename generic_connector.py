@@ -1,6 +1,6 @@
 #!/usr/bin/env python 
 # -*- coding: utf-8 -*- 
-# Copyright (C) converter3dji 2022 AKKA INGENIERIE PRODUIT (support@realfusio.com)
+# Copyright (C) converter3dji 2022 AKKODIS INGENIERIE PRODUIT SAS (support@realfusio.com)
 # 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,8 +17,6 @@
 
 from converter3dji import *
 import sys
-import csv
-import re
 import logging, logging.handlers
 
 class GenericPsCustomizer (PsCustomizer):
@@ -32,8 +30,8 @@ class GenericPsCustomizer (PsCustomizer):
 
 		return lRes
 		
-	def processConvResult(self, pDocsMap, pRootId, pSourceFilePath):
-		PsCustomizer.processConvResult(self, pDocsMap, pRootId, pSourceFilePath)
+	def processConvResult(self, pDocsMap, pRootId, pSourceFilePath, pAABB):
+		PsCustomizer.processConvResult(self, pDocsMap, pRootId, pSourceFilePath, pAABB)
 	
 ## MAIN
 if __name__ == '__main__':
@@ -95,7 +93,11 @@ if __name__ == '__main__':
 		lDefaultBuildParameters['buildparameters']['rootstructuredocid'] = lRootIds[0]
 		lDefaultBuildParameters['buildparameters']['tags'] = lJson['tags']
 		lDefaultBuildParameters['buildparameters']['defaultgeometrysettings']['backfaceculling'] = 'none'
-		lDefaultBuildParameters['buildparameters']['buildcomment'] = os.path.split(lJson['rootfolder'])[1]
+		if 'buildcomment' in lJson:
+			lBuildComment = lJson['buildcomment']
+		else:
+			lBuildComment = os.path.split(lJson['rootfolder'])[1]
+		lDefaultBuildParameters['buildparameters']['buildcomment'] = lBuildComment
 		lConverter.addDocument(lDefaultBuildParameters)
 
 		lConverter.triggerBuild(lDefaultBuildParameters['id'],False)
