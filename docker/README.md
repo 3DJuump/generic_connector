@@ -28,3 +28,7 @@ In this mode, for each top folders of `/connector` (except for folders whose nam
 # daemon
 
 Same as oneshot but executed periodically. Note that a folder will be processed only if it was not modified recently (few minutes) to avoid processing folder during a data copy
+
+# execute using docker run
+
+`docker run --volume ./connector_docker:/connector -e CONNECTOR_MODE=daemon --network host infinite.generic_connector:4.1.13.6242-4e4634a3312a8243`

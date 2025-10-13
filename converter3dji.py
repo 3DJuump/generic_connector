@@ -48,12 +48,16 @@ class Converter3djiSettings:
 		self.waitForProjectLockTimeOutSec = 30
 		# InfiniteCli exe
 		self.infiniteCliExe = None
+
 		# keep serving in memory indexer for ever, usefull to debug generator cli
 		self.inmemoryindexerserveforever = False
 		# should we enable document validation in document indexer to speedup debug process
 		self.inmemoryindexerenabledocumentvalidation = False
 		# listening port of the document indexer
 		self.docindexhttpport=8686
+		# elasticsearch url instance to use in place of cli docindexer
+		self.elasticsearchurl=None
+
 		# final scene unit
 		self.outputunit='millimeter'
 
@@ -104,12 +108,22 @@ class Converter3djiSettings:
 			raise Exception('invalid infiniteCliExe')
 		if not os.path.isfile(self.infiniteCliExe) or not os.path.exists(self.infiniteCliExe):
 			raise Exception('invalid infiniteCliExe')
-		if not isinstance(self.inmemoryindexerserveforever, bool):
-			raise Exception('invalid inmemoryindexerserveforever')
-		if not isinstance(self.inmemoryindexerenabledocumentvalidation,bool):
-			raise Exception('invalid inmemoryindexerenabledocumentvalidation')
-		if not isinstance(self.docindexhttpport,int):
-			raise Exception('invalid docindexhttpport')
+		if not self.elasticsearchurl is None:
+			if not isinstance(self.elasticsearchurl, str):
+				raise Exception('invalid elasticsearchurl')
+			if not self.inmemoryindexerserveforever is None:
+				raise Exception('inmemoryindexerserveforever should be None when using elasticsearchurl')
+			if not self.inmemoryindexerenabledocumentvalidation is None:
+				raise Exception('inmemoryindexerenabledocumentvalidation should be None when using elasticsearchurl')
+			if not self.docindexhttpport is None:
+				raise Exception('docindexhttpport should be None when using elasticsearchurl')
+		else:
+			if not isinstance(self.inmemoryindexerserveforever, bool):
+				raise Exception('invalid inmemoryindexerserveforever')
+			if not isinstance(self.inmemoryindexerenabledocumentvalidation,bool):
+				raise Exception('invalid inmemoryindexerenabledocumentvalidation')
+			if not isinstance(self.docindexhttpport,int):
+				raise Exception('invalid docindexhttpport')
 		if not self.outputunit in ['millimeter','centimeter','decimeter','meter','inch','foot']:
 			raise Exception('invalid outputunit')
 		
@@ -136,22 +150,32 @@ class PsCustomizerBase:
 		lSubPartLevel = ['root']
 		if lExt in ['.fbx','.vrml','.gltf','.obj','.wrl','.wrz','.igs','.stp', '.step']:
 			lSubPartLevel = ['geometry']
-		elif lExt in ['.catpart','.cgr','.jt','.model']:
+		elif lExt in ['.catpart','.cgr','.model']:
 			lSubPartLevel = ['assembly','component','geometricset']
+		elif lExt in ['.jt']:
+			lSubPartLevel = ['part']
 		elif lExt in ['.3dxml']:
 			lSubPartLevel = ['component', 'geometricset']
 		
 		lGeometryLevel = ['root']
 		if lExt in ['.fbx']:
 			lGeometryLevel = ['geometry']
-		elif lExt in ['.catpart','.cgr','.jt']:
+		elif lExt in ['.catpart','.cgr']:
 			lGeometryLevel = ['root']
+		elif lExt in ['.jt']:
+			lGeometryLevel = ['part','body']
 		elif lExt in ['.catproduct']:
 			lGeometryLevel = [
 					"assembly",
 					"part",
 					"component",
 					"geometricset"]
+		#added cases with wildcard extensions e.g .prt.1
+		elif (".prt." in pFileName) or (".asm." in pFileName):
+			lGeometryLevel = [
+					"body",
+					"geometry"
+					]
 
 		return {
 				#'overridecolor':None,
@@ -167,9 +191,25 @@ class PsCustomizerBase:
 				},
 				'fixinvalidxforms':'auto',
 				'computeaabb':False,
-				'inputunit': 'auto',
+				'inputunit': 'millimeter',
 				#'outputunit': self.__mParam.outputunit
 				}
+
+ 	#Used to clean unwanted characters in metadata fields name
+	def cleanMdUnwantedChars(self, pDocsMap):
+		for docid in pDocsMap:
+			lDoc = pDocsMap[docid]
+			if not 'metadata' in lDoc:
+				continue
+			lMd = lDoc['metadata']
+			lMd  = {key.replace('.', '_'): value for key, value in lMd.items()}
+			# Clean compound metadata keys if they are dicts
+			for k,v in lMd.items():
+				if isinstance(v, dict):
+					cleaned_compound = {key.replace('.', '_').replace('*', '_'): val for key, val in v.items()}
+					lMd[k] = cleaned_compound
+			lDoc['metadata'] = lMd
+   
 
 	# this method will allow to update docs returned by the converter
 	# default behavior will regroup some properties into sub objects
@@ -178,7 +218,7 @@ class PsCustomizerBase:
 		
 		for docid in pDocsMap:
 			lDoc = pDocsMap[docid]
-			if not (lDoc['type'] in ['partmetadata','linkmetadata']) or not 'metadata' in lDoc:
+			if not (lDoc['type'] in ['partmetadata','linkmetadata','instancemetadata']) or not 'metadata' in lDoc:
 				continue
 			lMd = lDoc['metadata']
 			
@@ -224,6 +264,43 @@ class PsCustomizerBase:
 				for k in lSpecificMd:
 					lMd['SpecificMd'].append( {'name':k,'values':lSpecificMd[k]})
 	
+		self.helperRemoveEmptyMetadataDocuments(pDocsMap)
+		self.cleanMdUnwantedChars(pDocsMap)
+  
+	def helperRemoveEmptyMetadataDocuments(self, pDocsMap : typing.Dict[str,dict]):
+		# first search for empty metadata documents
+		lEmptyMdDocs = set()
+		for docid in pDocsMap:
+			lDoc = pDocsMap[docid]
+			if not (lDoc['type'] in ['partmetadata','linkmetadata','instancemetadata']):
+				continue
+			if not 'metadata' in lDoc or len(lDoc['metadata']) == 0:
+				lEmptyMdDocs.add(docid)
+	
+		# remove all references to those documents
+		lFilterLambda = lambda e : e['docid'] in lEmptyMdDocs
+		for docid in pDocsMap:
+			lDoc = pDocsMap[docid]
+			if not (lDoc['type'] in ['structure']):
+				continue
+			
+			if 'partmetadatadocument' in lDoc:
+				lDoc['partmetadatadocument'] = list(filter(lFilterLambda, lDoc['partmetadatadocument']))
+				if len(lDoc['partmetadatadocument']):
+					del lDoc['partmetadatadocument']
+
+			if lDoc.get("children"):
+				for childDoc in lDoc["children"]:
+					lchildDoc = lDoc["children"][childDoc]
+					if 'linkmetadatadocuments' in lchildDoc:
+						lchildDoc['linkmetadatadocuments'] = list(filter(lFilterLambda, lchildDoc['linkmetadatadocuments']))
+						if len(lchildDoc['linkmetadatadocuments']):
+							del lchildDoc['linkmetadatadocuments']
+
+		# remove those documents
+		for docid in lEmptyMdDocs:
+			pDocsMap.pop(docid, None)
+
 	def helperHandleBadXForm(self, pDocsMap : typing.Dict[str,dict]):
 		lNewLinkMdDocs = {}
 		lTs = round(datetime.datetime.now().timestamp())
@@ -407,9 +484,8 @@ class PsConverter(ConverterInterface):
 			self.__mJobFile = open(os.path.abspath(os.path.join(self.__m3DJIParams.cacheFolder,'tmp_psconverter',str(self.__mConvCptr)+ '.x-ndjson')),'wb')
 			lSettings = {'log':{
 					'log2console':False,
-					'enablediag':True,
+					'loglevel':'DEBUG',
 					'folder': os.path.join(self.__m3DJIParams.cacheFolder).replace('\\','/')
-					
 				},
 				'system':{
 					'workercount':self.__mParams.workerCount,
@@ -460,6 +536,7 @@ class PsConverter(ConverterInterface):
 # default implementation of XRefResolverInteface this class to change the way xref are resolved
 #
 ########################################
+
 class FileSystemXRefResolver(XRefResolverInteface):
 	def __init__(self, pBaseDir : str, pCacheFile : str, pLogger : logging.Logger, pIgnoreFileWithSameSize = False):
 		XRefResolverInteface.__init__(self)
@@ -516,8 +593,8 @@ class FileSystemXRefResolver(XRefResolverInteface):
 						if lSearchKey in self.__mFilePathMap:
 							lSkipFile = False
 							if self.__mIgnoreFileWithSameSize:
-								for f,s in self.__mFilePathMap[lFileName]:
-									if s == lSize:
+								for f,s in self.__mFilePathMap[lSearchKey]:
+									if s == lSize:	
 										lSkipFile = True
 										break
 							if not lSkipFile:
@@ -543,44 +620,59 @@ class FileSystemXRefResolver(XRefResolverInteface):
 		for (k,vals) in self.__mFilePathMap.items():
 			for v in vals:
 				yield os.path.join(self.__mBaseDir,v[0])
-
+	
+	def __extractFileFolder(self, pPath):
+    	# normalize path, lowercase and remove filename
+		lRes = pPath.replace('\\','/').lower().split('/')[:-1]
+		lRes.reverse()
+		return lRes
+	
 	def resolveXRef(self,pParentFilePath : str , pXRef : str):
-		lXRef = pXRef.replace('\\','/')
-		lFileName = os.path.basename(lXRef)
+		lXRefFolder = self.__extractFileFolder(pXRef)
+		
+		lFileName = os.path.basename(pXRef)
 		lFileNameLowered = lFileName.lower()
+		if lFileNameLowered[-2:] == ".1":
+			lFileNameLowered = lFileNameLowered[:-2]
 		if not lFileNameLowered in self.__mFilePathMap:
-			self.__mLogger.warning("Fail to resolve xref " + lXRef + " unknown file")
+			self.__mLogger.warning("Fail to resolve xref " + pXRef + " unknown file")
 			return None
 		else:
-			# get relative file path of parent
-			lParentRelPath = self.__normalizePath(os.path.dirname(pParentFilePath))
 			
 			lRelPathList = self.__mFilePathMap[lFileNameLowered]
 			lMatch = []
+			lCurrentMatchLen = -1
+			# look for the longest path match
+			for (lCandidate,size) in lRelPathList:
+				lCandidateFolder = self.__extractFileFolder(lCandidate)
+
+				lNewMatchedLen = 0
+				for (ref,cand) in zip(lXRefFolder,lCandidateFolder):
+					if ref != cand:
+						break
+					lNewMatchedLen = lNewMatchedLen + 1
+				if lNewMatchedLen > lCurrentMatchLen:
+					lCurrentMatchLen = lNewMatchedLen
+					lMatch = []
+				elif lNewMatchedLen < lCurrentMatchLen:
+					continue
+				lMatch.append((lCandidate,size))
 			
-			# first we look for a file which is in a subfolder of parent
-			if len(lMatch) == 0:
-				for (p,size) in lRelPathList:
-					if p.startswith(lParentRelPath) and lXRef.endswith(p):
-						lMatch.append((p,size))
+			assert(len(lMatch) > 0)
+
+			if len(lMatch) > 1 :
+				lParentFolder = self.__normalizePath(os.path.dirname(pParentFilePath))
+				# got multiple matches, favor a match that is located in the parent folder or a sub folder
+				lPreferedMatch = []
+				for (lCandidate,size) in lMatch:
+					lCandidateFolder = os.path.dirname(lCandidate)
+					if lCandidateFolder.startswith(lParentFolder):
+						lPreferedMatch.append((lCandidate,size))
+				if len(lPreferedMatch) > 0:
+					lMatch = lPreferedMatch
 			
-			# second make a global search
-			lPathLengthMatched = len(lFileName)
-			if len(lMatch) == 0:
-				for (p,size) in lRelPathList:
-					for i in range(len(p),lPathLengthMatched,-1):
-						if lXRef.endswith(p[-i:]):
-							if i > lPathLengthMatched:
-								lMatch.clear()
-								lPathLengthMatched = i
-							elif i < lPathLengthMatched:
-								break
-							lMatch.append((p,size))
-							break
-			if len(lMatch) == 0:
-				lMatch = lRelPathList
 			if len(lMatch) > 1:
-				self.__mLogger.warning("multiple path match for xref "+lXRef+", choosing one at random")
+				self.__mLogger.warning("multiple path match for xref "+pXRef+", choosing first of %s" % (lMatch))
 			lMatch = lMatch[0]
 			self.__mLogger.debug('resolve "%s" to "%s" from "%s"' % (pXRef,lMatch[0],pParentFilePath))
 			return (os.path.join(self.__mBaseDir,lMatch[0]),lMatch[1])
@@ -590,7 +682,6 @@ class FileSystemXRefResolver(XRefResolverInteface):
 		if lRes == '.':
 			lRes = ''
 		return lRes
-
 
 
 
@@ -658,17 +749,19 @@ class MetadataTypeMapping:
 			if 'integer' in lTypes and 'double' in lTypes:
 				lTypes.remove('integer')
 			if len(lTypes) != 1:
-				self.__mLogger.warn('detect several types for metadata %s : %s' % (k,self.__mMdTypes[k]))
+				self.__mLogger.warning('detect several types for metadata %s : %s' % (k,self.__mMdTypes[k]))
+				# force text type and disable indexation
+				self.__createMappingEntry(lRootProperties,lPath,'text',lPath,False)
 				continue
 			lType = list(self.__mMdTypes[k])[0]
 			lStr = lStr + '\n\t%s : %s' % (k,lType)
 			if lType in ['text','list_of_text','integer','list_of_integer','double','list_of_double','date','list_of_date','boolean','list_of_boolean','object']:
 				# this is a basic type
-				self.__createMappingEntry(lRootProperties,lPath,lType.replace('list_of_',''),lPath)
+				self.__createMappingEntry(lRootProperties,lPath,lType.replace('list_of_',''),lPath,True)
 			elif lType == 'list_of_object':
-				self.__createMappingEntry(lRootProperties,lPath,'nested',lPath)
+				self.__createMappingEntry(lRootProperties,lPath,'nested',lPath,True)
 			else:
-				self.__mLogger.warn('unhandled metadata type %s : %s' % (k,lType))
+				self.__mLogger.warning('unhandled metadata type %s : %s' % (k,lType))
 				continue
 		lProposedMapping = {
 			"id": "com.3djuump:indexmapping",
@@ -689,7 +782,7 @@ class MetadataTypeMapping:
 		self.__mLogger.info(lStr)
 		return lProposedMapping
 
-	def __createMappingEntry(self,pMapping, pPath, pType, pFullPath):
+	def __createMappingEntry(self,pMapping, pPath, pType, pFullPath, pIndex):
 		if not pPath[0] in pMapping:
 			pMapping[pPath[0]] = {}
 		lDstObj = pMapping[pPath[0]]
@@ -699,17 +792,19 @@ class MetadataTypeMapping:
 					self.__mLogger.warn('fail to create mapping entry for %s, missing properties field for %s' % (pFullPath,pPath[0]))
 					return
 				lDstObj['properties'] = {}
-			self.__createMappingEntry(lDstObj['properties'],pPath[1:],pType,pFullPath)
+			self.__createMappingEntry(lDstObj['properties'],pPath[1:],pType,pFullPath,pIndex)
 		else:
 			if not 'type' in lDstObj:
 				lDstObj['type'] = pType
+				if not pIndex:
+					lDstObj['index'] = False
 				if pType == 'date':
 					lDstObj['ignore_malformed'] = True
 					lDstObj['format'] = "date_optional_time||dd/MM/yyyy"
 				elif pType in ['nested','object']:
 					lDstObj['dynamic'] = False
 			elif lDstObj['type'] != pType:
-				self.__mLogger.warn('fail to create mapping entry for %s, type conflict' % (pFullPath))
+				self.__mLogger.warning('fail to create mapping entry for %s, type conflict' % (pFullPath))
 				return
 
 
@@ -744,7 +839,7 @@ class Converter3dji:
 		self.__mRemainingFilesToProcess = dict()
 		self.__mAllProcessedFiles = set()
 		self.__mPotentialRootFiles = set()
-		self.__mDocumentIndexer = DocumentIndexer(pParam,pLogger)
+		self.__mDocumentIndexer = ESDocumentIndexer(pParam,pLogger) if not pParam.elasticsearchurl is None else CliDocumentIndexer(pParam,pLogger)
 		self.__mAllMdKeys = MetadataTypeMapping(pLogger)
 		self.__mTriggerBuildWasCalled = False
 	
@@ -772,7 +867,7 @@ class Converter3dji:
 			self.__mAllMdKeys.getMapping()
 		
 		# if there was no exception or exception occurs during build process, keep indexer alive
-		if (exc_type is None or self.__mTriggerBuildWasCalled) and self.__mParam.inmemoryindexerserveforever:
+		if (exc_type is None or self.__mTriggerBuildWasCalled) and not self.__mParam.inmemoryindexerserveforever is None and self.__mParam.inmemoryindexerserveforever:
 			print('\n#######################')
 			print('\n#######################')
 			print('Keep docindexer alive on http://127.0.0.1:%d/docindexer/api , Hit CTRL+C to stop it' % self.__mParam.docindexhttpport)
@@ -810,7 +905,7 @@ class Converter3dji:
 			},
 			'log':{
 				'log2console':False,
-				'enablediag':True
+				'loglevel':'DEBUG'
 			},
 			'generatorcachefolder':os.path.join(self.__mParam.cacheFolder,'generatorcache').replace('\\','/'),
 			'connectorinfo':pConnectorInfo,
@@ -826,7 +921,9 @@ class Converter3dji:
 
 		self.__mDocumentIndexer.onEvent('start_build')
 
-		lCmdLine = [os.path.abspath(self.__mParam.infiniteCliExe), 'generator','build', lBuildInfoFile, 'http://127.0.0.1:%d/docindexer/api' % self.__mParam.docindexhttpport, self.__mParam.directoryNickName]
+		lDocumentSourceIdx = 'http://127.0.0.1:%d/docindexer/api' % self.__mParam.docindexhttpport if self.__mParam.elasticsearchurl is None else self.__mParam.elasticsearchurl + '/' + self.__mParam.projectId + '_connector'
+
+		lCmdLine = [os.path.abspath(self.__mParam.infiniteCliExe), 'generator','build', lBuildInfoFile, lDocumentSourceIdx, self.__mParam.directoryNickName]
 		self.__mLogger.debug('Execute : "' + '" "'.join(lCmdLine) + '"')
 		with subprocess.Popen(lCmdLine,stdout = None, stderr = None, cwd=os.path.split(os.path.abspath(self.__mParam.infiniteCliExe))[0]) as lGenerationProcess:
 			lGenerationReturnCode = None
@@ -1071,7 +1168,7 @@ class Converter3dji:
 				(lRootId,_,_) = self._computeFileInfo(r)
 				lRootIds[r] = lRootId
 		self.__mLogger.debug('Processing done in : %d sec' % (time.time() - lTimeStart))
-		self.__mLogger.debug('Rood documents : ' + json.dumps(lRootIds))
+		self.__mLogger.debug('Root documents : ' + json.dumps(lRootIds))
 		return lRootIds
 	
 	def _callPsCustomizer(self, pConvResult : str, pRootId : str, pSourceFilePath : str, pTs : int, pIncrementTs=False):
@@ -1169,8 +1266,11 @@ class Converter3dji:
 						else:
 							# link to a missing structure document to generate an error
 							lChild['ref'] = 'unresolved_xref_dummy_struct_doc'
-							lChild['tags'] = ['L&G_empty_or_missing']
 					lLinkId = c
+					# legacy support, psconverter:xrefmetadata was removed in 4.1.8
+					# remove this entry from old convresults, this statement could be removed in 4.2.x
+					if 'psconverter:xrefmetadata' in lChild:
+						del lChild['psconverter:xrefmetadata']
 					lFinalDoc['children'][lLinkId] = lChild
 			elif lDoc['type'] in ['partmetadata','linkmetadata','instancemetadata'] and 'metadata' in lDoc:
 				for k in lDoc['metadata']:
@@ -1198,7 +1298,110 @@ class SetEncoder(json.JSONEncoder):
 # class used by Converter3dji to interact with document indexer
 #
 ########################################
-class DocumentIndexer():
+class ESDocumentIndexer():
+	def __init__(self, pParams : Converter3djiSettings, pLogger : logging.Logger):
+		self.__mLogger = pLogger
+		self.__mParam = pParams
+		self.__mCurrentEsBatch = io.BytesIO()
+		self.__mCurrentEsBatchDocCount = 0
+
+		self.__mUrlBase = self.__mParam.elasticsearchurl + '/' + self.__mParam.projectId + '_connector'
+
+		self.__mPool = requests.Session()
+
+		# create ES index if required
+		lResponse = self.__mPool.get(self.__mUrlBase)
+		if lResponse.status_code == 404:
+			lResponse = self.__mPool.put(self.__mUrlBase)
+			if lResponse.status_code != 200:
+				raise Exception('Fail to create ES index ' + str(lResponse.status_code) + ' ' + lResponse.reason + ' ' + str(lResponse.text))
+		elif lResponse.status_code != 200:
+			raise Exception('Got an error while verifying ES index ' + str(lResponse.status_code) + ' ' + lResponse.reason + ' ' + str(lResponse.text))
+		
+		# set mapping
+		lMapping = {
+			'dynamic': False,
+			'properties':{
+				'id': {
+					'type': 'keyword'
+				},
+				'type': {
+					'type': 'keyword'
+				},
+				'ts': {
+					'type': 'long'
+				}
+			}
+		}
+		lResponse = self.__mPool.put(self.__mUrlBase + '/_mapping',data=json.dumps(lMapping),headers={"Content-Type": "application/json"})
+		if lResponse.status_code != 200:
+			raise Exception('Fail to set ES mapping ' + str(lResponse.status_code) + ' ' + lResponse.reason + ' ' + str(lResponse.text))
+	
+	def addDocument(self, pDoc):
+		lToAppend = b'{"index":{"_id":"' + pDoc['id'].encode('utf8') + b'"}}\n'
+		# our script has added ts on all documents remove those that should not be here
+		if pDoc['type'] in ['structure', 'geometry', 'annotation'] and 'ts' in pDoc:
+			del pDoc['ts']
+		lToAppend = lToAppend + json.dumps(pDoc).encode('utf8') + b'\n'
+
+		if ((self.__mCurrentEsBatch.getbuffer().nbytes + len(lToAppend)) > 80*1024*1024 or
+				self.__mCurrentEsBatchDocCount >= 9999
+			):
+			self.__uploadBatch()
+		self.__mCurrentEsBatch.write(lToAppend)
+		self.__mCurrentEsBatchDocCount = self.__mCurrentEsBatchDocCount + 1
+
+	def onEvent(self, pEvent : str):
+		if pEvent == 'start_build':
+			self.__uploadBatch()
+			self.__syncIndex()
+		else:
+			...
+	
+	def __uploadBatch(self):
+		if self.__mCurrentEsBatch.getbuffer().nbytes == 0:
+			return
+		self.__mLogger.debug('Upload %s document(s) for %sB to es index' % (self.__mCurrentEsBatchDocCount, self.__mCurrentEsBatch.getbuffer().nbytes))
+		lToSend = self.__mCurrentEsBatch.getvalue()
+		lResponse = self.__mPool.post(
+			self.__mUrlBase + '/_bulk', data=lToSend, headers={"Content-Type": "application/x-ndjson"})
+		if lResponse.status_code != 200:
+			with open(self.__mParam.cacheFolder + '/eserror.log', 'w') as f:
+				f.write('Invalid return code for _bulk\n' + str(lResponse.status_code) + '\n' + lResponse.reason + '\n' + str(lResponse.text) + '\n' + lToSend.decode('utf8'))
+			self.__mLogger.critical('Es error, please check eserror.log')
+			raise Exception('Es error, please check eserror.log')
+		if lResponse.json()['errors']:
+			with open(self.__mParam.cacheFolder + '/eserror.log', 'w') as f:
+				f.write('Insertion error\n')
+				for i in lResponse.json()['items']:
+					if 'index' in i and 'error' in i['index']:
+						f.write(json.dumps(i['index']) + '\n')
+			with open(self.__mParam.cacheFolder + '/lastesbatch.txt', 'wb') as f:
+				f.write(lToSend)
+			self.__mLogger.critical('Es error, please check eserror.log')
+			raise Exception('Es error, please check eserror.log')
+		self.__mLogger.debug('Inserted %i docs in the index' %
+							 (len(lResponse.json()['items'])))
+		self.__mCurrentEsBatch = io.BytesIO()
+		self.__mCurrentEsBatchDocCount = 0
+		# force an index sync to avoid ESRejectedExecutionException 
+		self.__syncIndex()
+
+	def __syncIndex(self):
+		lResponse = self.__mPool.post(self.__mUrlBase + '/_flush?force=true&wait_if_ongoing=true')
+		if(lResponse.status_code != 200):
+			self.__mLogger.critical('Invalid return code for _flush ' + str(
+				lResponse.status_code) + ' ' + lResponse.reason + ' ' + str(lResponse.text))
+			raise Exception('Invalid return code for _flush ' + str(
+				lResponse.status_code) + ' ' + lResponse.reason + ' ' + str(lResponse.text))
+		lResponse = self.__mPool.post(self.__mUrlBase + '/_refresh')
+		if(lResponse.status_code != 200):
+			self.__mLogger.critical('Invalid return code for _refresh ' + str(
+				lResponse.status_code) + ' ' + lResponse.reason + ' ' + str(lResponse.text))
+			raise Exception('Invalid return code for _refresh ' + str(
+				lResponse.status_code) + ' ' + lResponse.reason + ' ' + str(lResponse.text))
+
+class CliDocumentIndexer():
 	def __init__(self, pParams : Converter3djiSettings, pLogger : logging.Logger):
 		self.__mLogger = pLogger
 		self.__mCurrentBatch = io.BytesIO()
