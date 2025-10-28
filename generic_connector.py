@@ -83,6 +83,7 @@ def loadConfiguration(pConnectorConf, pPrjConf):
 		lPsConverterSettings.workerCount = min(lPsConverterSettings.workerCount,lPrjConf['maxWorkerCount'])
 	lPsConverterSettings.maxRamMB = lConnectorConf['maxRamMB']
 	lPsConverterSettings.maxTimePerWorkerSec = lPrjConf['maxTimePerWorkerSec']
+	lPsConverterSettings.logLevel = lConnectorConf.get('logLevel','INFO')
 	lPsConverterSettings.checkValidity()
 	lPsConverterSettings.echo(lLogger)
 
@@ -105,8 +106,7 @@ if __name__ == '__main__':
 	
 	# instanciate logger
 	lLogger = logging.getLogger()
-	lLogger.setLevel(logging.INFO)
-	lLogger.setLevel(logging.DEBUG)
+	
 	# install a console handler
 	lConsoleHandler = logging.StreamHandler()
 	lConsoleHandler.setFormatter(logging.Formatter('%(levelname)-8s | %(message)s'))
@@ -115,7 +115,9 @@ if __name__ == '__main__':
 	lLogger.info('Start processing %s' % lPrjFolder)
 	# load configurations
 	(lConverterSettings,lPsConverterSettings) = loadConfiguration(lConnectorConfPath, os.path.join(lPrjFolder,'project_conf.json'))
-
+	lLogger.setLevel(logging.INFO)
+	if lPsConverterSettings.logLevel != 'INFO':
+		lLogger.setLevel(logging.DEBUG)
 	if not os.path.isdir(lConverterSettings.cacheFolder):
 		os.makedirs(lConverterSettings.cacheFolder)
 

@@ -48,7 +48,7 @@ class Converter3djiSettings:
 		self.waitForProjectLockTimeOutSec = 30
 		# InfiniteCli exe
 		self.infiniteCliExe = None
-
+		
 		# keep serving in memory indexer for ever, usefull to debug generator cli
 		self.inmemoryindexerserveforever = False
 		# should we enable document validation in document indexer to speedup debug process
@@ -420,6 +420,8 @@ class PsConverterSettings:
 		self.maxRamMB = max(2048,psutil.virtual_memory().total / (self.workerCount * 1024 * 1024))
 		# max processing time per job, eg : 120
 		self.maxTimePerWorkerSec = 120
+		# log level
+		self.logLevel = 'INFO'
 	
 	# load settings from a dict
 	def loadFromJson(self, pJson : dict):
@@ -452,6 +454,9 @@ class PsConverterSettings:
 			raise Exception('invalid maxRamMB')
 		if not isinstance(self.maxTimePerWorkerSec, int):
 			raise Exception('invalid maxTimePerWorkerSec')
+		if not self.logLevel in ['TRACE','DEBUG','INFO']:
+			raise Exception('invalid logLevel')
+		
 
 ########################################
 #
@@ -484,7 +489,7 @@ class PsConverter(ConverterInterface):
 			self.__mJobFile = open(os.path.abspath(os.path.join(self.__m3DJIParams.cacheFolder,'tmp_psconverter',str(self.__mConvCptr)+ '.x-ndjson')),'wb')
 			lSettings = {'log':{
 					'log2console':False,
-					'loglevel':'DEBUG',
+					'loglevel': self.__mParams.logLevel,
 					'folder': os.path.join(self.__m3DJIParams.cacheFolder).replace('\\','/')
 				},
 				'system':{
@@ -905,7 +910,7 @@ class Converter3dji:
 			},
 			'log':{
 				'log2console':False,
-				'loglevel':'DEBUG'
+				'loglevel': self.__mPsConverterParams.logLevel
 			},
 			'generatorcachefolder':os.path.join(self.__mParam.cacheFolder,'generatorcache').replace('\\','/'),
 			'connectorinfo':pConnectorInfo,
@@ -1224,7 +1229,7 @@ class Converter3dji:
 	def _computeFileInfo(self,pFileName : str):
 		m = hashlib.sha256()
 		m.update(pFileName.encode('utf8'))
-		lUniqueId = binascii.hexlify(m.digest()).decode('ascii')
+		lUniqueId = binascii.hexlify(m.digest()).decode('ascii')[:30]
 		lUniqueId = lUniqueId.replace('/','_')
 		lUniqueId = os.path.split(pFileName)[1] + '_' + lUniqueId
 		return ('struct_' + lUniqueId, 

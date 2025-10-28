@@ -1,0 +1,94 @@
+{
+	"$schema": "https://json-schema.org/draft-07/schema",
+	"additionalProperties": false,
+	"required": [
+		"directoryNickName",
+		"cacheFolder",
+		"indexer",
+		"infiniteCliExe",
+		"maxWorkerCount",
+		"maxRamMB"
+	],
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"cacheFolder": {
+			"description": "path to cache folder",
+			"minLength": 1,
+			"type": "string"
+		},
+		"infiniteCliExe": {
+			"description": "path to cli",
+			"minLength": 1,
+			"type": "string"
+		},
+		"directoryNickName": {
+			"description": "directory nick name used through the cli",
+			"minLength": 1,
+			"type": "string"
+		},
+		"indexer": {
+			"oneOf": [
+				{
+					"properties": {
+						"enabledocumentvalidation": {
+							"description": "if set doc indexer will validate document content, allowing early error detection. At a cost of computational time.",
+							"type": "boolean"
+						},
+						"httpport": {
+							"type": "integer",
+							"minimum": 1,
+							"description": "local port used by indexer"
+						},
+						"serveforever": {
+							"description": "if enabled, doc indexer will be kept running after build generation.",
+							"type": "boolean"
+						}
+					},
+					"required": [
+						"serveforever",
+						"enabledocumentvalidation",
+						"httpport"
+					],
+					"additionalProperties": false,
+					"type": "object"
+				},
+				{
+					"properties": {
+						"elasticsearchurl": {
+							"description": "url of an elasticsearch instance",
+							"example": "http://127.0.0.1:9200",
+							"type": "string"
+						}
+					},
+					"required": [
+						"elasticsearchurl"
+					],
+					"additionalProperties": false,
+					"type": "object"
+				}
+			]
+		},
+		"maxRamMB": {
+			"description": "amount of memory in MB dedicated to conversion/build",
+			"type": "integer",
+			"minimum": 2048
+		},
+		"maxWorkerCount": {
+			"description": "number of concurrent worker/cpu deticated to conversion/build",
+			"minimum": 1,
+			"type": "integer"
+		},
+		"logLevel": {
+			"type": "string",
+			"enum": [
+				"INFO",
+				"DEBUG",
+				"TRACE"
+			],
+			"default": "INFO"
+		}
+	},
+	"type": "object"
+}
