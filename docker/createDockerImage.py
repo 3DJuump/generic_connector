@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) generic_connector.py 2024 AKKODIS INGENIERIE PRODUIT SAS (support@3djuump.com)
+# Copyright (C) createDockerImage.py 2026 AKKODIS INGENIERIE PRODUIT SAS (support@3djuump.com)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ if __name__ == '__main__':
 		assert(os.path.exists(lInfinitePackage))
 	while lInfinitePackage is None:
 		lInfinitePackage = input('3D Juump Infinite release package (eg : C:/4.0.9.3604-af7956e6cfef0a6a) :')
-		if not os.path.exists(os.path.join(lInfinitePackage, 'dist/bookworm')):
+		if not os.path.exists(os.path.join(lInfinitePackage, 'dist/trixie')):
 			print('Invalid folder')
 			lInfinitePackage = None
 		else:
@@ -48,9 +48,9 @@ if __name__ == '__main__':
 	if os.path.exists('./tmp'):
 		shutil.rmtree('./tmp')
 	os.makedirs('./tmp')
-	for f in os.listdir(os.path.join(lInfinitePackage,'dist/bookworm/')):
+	for f in os.listdir(os.path.join(lInfinitePackage,'dist/trixie/')):
 		if '-cli_' in f or '-migration' in f:
-			shutil.copyfile(os.path.join(lInfinitePackage,'dist/bookworm',f),'./tmp/'+f)
+			shutil.copyfile(os.path.join(lInfinitePackage,'dist/trixie',f),'./tmp/'+f)
 	shutil.copy(os.path.join(lInfinitePackage,'install form/docker/install_deb_dependencies.sh'),'./tmp/install_deb_dependencies.sh')
 	print('Start building docker image, take a break ...')
 	os.chdir('..')

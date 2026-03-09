@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) converter3dji.py 2024 AKKODIS INGENIERIE PRODUIT SAS (support@3djuump.com)
+# Copyright (C) converter3dji.py 2026 AKKODIS INGENIERIE PRODUIT SAS (support@3djuump.com)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,8 +18,7 @@
 
 
 ## DEPENDENCIES
-import json, hashlib, base64, os, copy, requests, uuid, sys, math, datetime, re, io, logging, inspect, multiprocessing, psutil, subprocess, time, typing, binascii, http.server
-import signal
+import json, hashlib, base64, os, copy, requests, uuid, sys, math, datetime, re, io, logging, inspect, multiprocessing, psutil, subprocess, time, typing, binascii, enum, signal
 
 ########################################
 #
@@ -152,11 +151,11 @@ class PsCustomizerBase:
 			lSubPartLevel = ['geometry']
 		elif lExt in ['.catpart','.cgr','.model']:
 			lSubPartLevel = ['assembly','component','geometricset']
-		elif lExt in ['.jt']:
+		elif lExt in ['.jt','.sldprt']:
 			lSubPartLevel = ['part']
 		elif lExt in ['.3dxml']:
 			lSubPartLevel = ['component', 'geometricset']
-		
+
 		lGeometryLevel = ['root']
 		if lExt in ['.fbx']:
 			lGeometryLevel = ['geometry']
@@ -221,6 +220,12 @@ class PsCustomizerBase:
 			if not (lDoc['type'] in ['partmetadata','linkmetadata','instancemetadata']) or not 'metadata' in lDoc:
 				continue
 			lMd = lDoc['metadata']
+
+			# remove Original Filename to avoid disclosing server file structure or showing temporary file name
+			if 'Original filename' in lMd:
+				del lMd['Original filename']
+				lMd['filename'] = os.path.split(pSourceFilePath)[1]
+
 			
 			# filter CoreTechno metadata which have default values
 			self.helperRemoveGroupOfDefaultValues(lMd,[
@@ -543,91 +548,192 @@ class PsConverter(ConverterInterface):
 ########################################
 
 class FileSystemXRefResolver(XRefResolverInteface):
-	def __init__(self, pBaseDir : str, pCacheFile : str, pLogger : logging.Logger, pIgnoreFileWithSameSize = False):
+
+	class DuplicateFileDetectionMethod(enum.Enum):
+		BY_SIZE = 1 # fastest method by might have false positive
+		BY_HASH = 2 # most reliable method
+
+	# pBaseDirs is a list of top folders to index
+	def __init__(self, pBaseDirs : str | list, pCacheFile : str, pLogger : logging.Logger, pDuplicateFileDetectionMethod : DuplicateFileDetectionMethod = DuplicateFileDetectionMethod.BY_HASH):
 		XRefResolverInteface.__init__(self)
 		
 		self.__mLogger = pLogger
 		# map : file name => array(relpath,filesize)
 		self.__mFilePathMap = dict()
-		self.__mBaseDir = os.path.abspath(pBaseDir)
-		self.__mIgnoreFileWithSameSize = pIgnoreFileWithSameSize
+		# if pCacheFile is a string
+		if type(pBaseDirs) is str:
+			self.__mBaseDirs = [os.path.abspath(pBaseDirs)]
+		else:
+			self.__mBaseDirs = []
+			for e in pBaseDirs:
+				self.__mBaseDirs.append(os.path.abspath(e))
 
-		lCptr = 0
+		# change this if you change cache file format
+		self.__mCacheVersion = 'c5651270-da0e-4d59-971e-7f81c915478b'
+
+		lBaseDirsMTime = 0
+		for e in self.__mBaseDirs:
+			self.__mLogger.debug('Folder last modification date : %s => %s' % (e, time.ctime(os.stat(e).st_mtime)))
+			lBaseDirsMTime = max(lBaseDirsMTime,os.stat(e).st_mtime)
+		if os.path.isfile(pCacheFile):
+			self.__mLogger.debug('Cache file last modification date : %s => %s' % (e, time.ctime(os.stat(pCacheFile).st_mtime)))
+		
 		lCacheIsValid = False
 		if pCacheFile is None:
 			self.__mLogger.debug('FileSystemXRefResolver no cache file specified')
 		elif not os.path.isfile(pCacheFile):
 			self.__mLogger.debug('FileSystemXRefResolver cache file is missing')
-		elif (os.stat(pBaseDir).st_mtime > os.stat(pCacheFile).st_mtime):
-			self.__mLogger.debug('FileSystemXRefResolver base folder ts is newer than cache file')
+		elif (lBaseDirsMTime > os.stat(pCacheFile).st_mtime):
+			self.__mLogger.debug('FileSystemXRefResolver base folder(s) ts is newer than cache file')
 		else:
 			lCacheContent = {}
 			with open(pCacheFile,'r',encoding='UTF-8') as f:
 				lCacheContent = json.load(f)
-			if not 'sourcefolder' in lCacheContent or lCacheContent['sourcefolder'] != pBaseDir:
-				self.__mLogger.warn('FileSystemXRefResolver cache file was build from an other base dir, rebuild it')
+			if not 'version' in lCacheContent or lCacheContent['version'] != self.__mCacheVersion:
+				self.__mLogger.warning('FileSystemXRefResolver cache file version is invalid, rebuild it')
+			elif lCacheContent['sourcefolders'] != self.__mBaseDirs:
+				self.__mLogger.warning('FileSystemXRefResolver cache file was build from an other base dir, rebuild it')
+			elif lCacheContent['duplicatefiledetectionmethod'] != pDuplicateFileDetectionMethod.name:
+				self.__mLogger.warning('FileSystemXRefResolver cache file was build with an other duplicate file detection method, rebuild it')
 			else:
 				self.__mFilePathMap = lCacheContent['files']
 				lCacheIsValid = True
-				self.__mLogger.info('FileSystemXRefResolver load index of %s from cache %s ' % (pBaseDir,pCacheFile))
-				for f in self.__mFilePathMap:
-					lCptr = lCptr + len(self.__mFilePathMap[f])
-		
+				self.__mLogger.info('FileSystemXRefResolver load index of %s from cache %s ' % (self.__mBaseDirs,pCacheFile))
+				
 			
 		if not lCacheIsValid:
-			self.__mLogger.info('FileSystemXRefResolver start indexing ' + pBaseDir)
+			self.__mLogger.info('FileSystemXRefResolver start indexing %s' % (self.__mBaseDirs))
 			lIntRe = re.compile('^\\.[0-9]+$')
-			for (dirpath, dirnames, filenames) in os.walk(self.__mBaseDir):
-				lCptrStart = lCptr
-				self.__mLogger.debug('%s ...' % (dirpath)) 
-				for lFile in filenames:
-					lFullFilePath = os.path.join(dirpath,lFile)
-					lRelativePath = self.__normalizePath(lFullFilePath)
-					lExt = os.path.splitext(lFullFilePath)[1].lower()
-					lSearchKey = os.path.basename(lFullFilePath).lower()
+			lPotentialDuplicates = set()
+			for i in range(0,len(self.__mBaseDirs)):
+				for (dirpath, _, filenames) in os.walk(self.__mBaseDirs[i]):
+					self.__mLogger.debug('%s ...' % (dirpath)) 
+					lFoundFiles = False
+					for lFile in filenames:
+						self.__mLogger.debug('indexing file %s' % (lFile))
+						lFullFilePath = os.path.join(dirpath,lFile)
+						lRelativePath = self.__normalizePath(i,lFullFilePath)
+						lExt = os.path.splitext(lFullFilePath)[1].lower()
+						lSearchKey = os.path.basename(lFullFilePath).lower()
 
-					# some files uses dual extension prt.1 asm.1
-					# detect this and remove this number for indexation as usually those files are referenced with the number postfix
-					if lIntRe.match(lExt):
-						lCharToRemove = len(lExt)
-						lExt = os.path.splitext(lFullFilePath[:-lCharToRemove])[1].lower()
-						lSearchKey = lSearchKey[:-lCharToRemove]
+						# some files uses dual extension prt.1 asm.1
+						# detect this and remove this number for indexation as usually those files are referenced with the number postfix
+						if lIntRe.match(lExt):
+							lCharToRemove = len(lExt)
+							lExt = os.path.splitext(lFullFilePath[:-lCharToRemove])[1].lower()
+							lSearchKey = lSearchKey[:-lCharToRemove]
 
-					if lExt in ['.catproduct', '.jt', '.catpart', '.cgr', '.model', '.fbx', '.obj', '.gltf', '.plmxml', '.vrml', '.wrl', '.wrz', '.igs', '.stp', '.step','.3dxml','.prt','.xrt','.asm']:
-						lSize = os.path.getsize(lFullFilePath)
-						if lSearchKey in self.__mFilePathMap:
-							lSkipFile = False
-							if self.__mIgnoreFileWithSameSize:
-								for f,s in self.__mFilePathMap[lSearchKey]:
-									if s == lSize:	
-										lSkipFile = True
+						if lExt in [
+								'.3dxml',
+								'.asm',
+								'.catpart',
+								'.catproduct',
+								'.cgr',
+								'.fbx',
+								'.gltf',
+								'.igs',
+								'.jt',
+								'.model',
+								'.obj',
+								'.plmxml',
+								'.prt',
+								'.sldasm',
+								'.sldprt',
+								'.step',
+								'.stl'
+								'.stp',
+								'.vrml',
+								'.wrl',
+								'.wrz',
+								'.xrt',
+							]:
+							lSize = os.path.getsize(lFullFilePath)
+							lFoundFiles = True
+							lFileList = self.__mFilePathMap.setdefault(lSearchKey,[])
+							# remove duplicate only for terminal files like .catpart or .cgr
+							# mutualizing .catproducts will mutualize resolved xref which could lead to wrong resolution if those two files were referencing adjacent files
+							# that endsup being different
+							if lExt in ['.catpart','.cgr','.model','.obj','.prt','.stl']:
+								for e in lFileList:
+									if e['size'] == lSize:	
+										lPotentialDuplicates.add(lSearchKey)
 										break
-							if not lSkipFile:
-								self.__mFilePathMap[lSearchKey].append((lRelativePath,lSize))
+							lFileList.append({
+								'basediridx':i,
+								'relativepath': lRelativePath,
+								'size': lSize
+							})
+							
+					if lFoundFiles:
+						self.__mLogger.debug('%s : indexed' % (dirpath)) 
+			
+			lIgnoredDuplicated = []
+			if len(lPotentialDuplicates ) > 0:
+				self.__mLogger.info('FileSystemXRefResolver start duplicate file detection with method %s' % (pDuplicateFileDetectionMethod.name))
+				for lFileName in lPotentialDuplicates:
+
+					lFileList = self.__mFilePathMap[lFileName]
+					assert(len(lFileList)> 1)
+					# compute grouping criteria
+					lGroupByMap = {}
+					for e in lFileList:
+						if pDuplicateFileDetectionMethod == FileSystemXRefResolver.DuplicateFileDetectionMethod.BY_SIZE:
+							lGroupKey = str(e['size'])
+						elif pDuplicateFileDetectionMethod == FileSystemXRefResolver.DuplicateFileDetectionMethod.BY_HASH:
+							# compute hash
+							lHash = hashlib.sha256()
+							with open( os.path.join( self.__mBaseDirs[e['basediridx']],e['relativepath'] ),'rb') as f:
+								while True:
+									lData = f.read(1*1024*1024)
+									if not lData:
+										break
+									lHash.update(lData)
+							lGroupKey = lHash.hexdigest()
 						else:
-							self.__mFilePathMap[lSearchKey] = [(lRelativePath,lSize)]
-						lCptr = lCptr + 1
-				if lCptr !=lCptrStart:
-					self.__mLogger.debug('%s : %d files indexed' % (dirpath,lCptr-lCptrStart)) 
-				
+							raise Exception('unsupported duplicate file detection method %s' % (pDuplicateFileDetectionMethod.name))
+						lGroupByMap.setdefault(lGroupKey,[]).append(e)
+
+					lNewFileList = []
+					# then for each group pick one file
+					for k in lGroupByMap:
+						lFiles = lGroupByMap[k]
+						# ensure that we will pick always the same file
+						lFiles = sorted(lFiles, key=lambda e : e['relativepath'])
+						lNewFileList.append(lFiles[0])
+						lIgnoredDuplicated = lIgnoredDuplicated + lFiles[1:]
+					self.__mFilePathMap[lFileName] = lNewFileList
+					lRemovedDuplicateCount = len(lFileList) - len(lNewFileList)
+					if lRemovedDuplicateCount > 0:
+						self.__mLogger.debug('File mutualisation remove %d duplicates for file %s' % (lRemovedDuplicateCount,lFileName))
+			
+			# sort file list to ensure resolution stability (in case of pick first of)
+			for k in self.__mFilePathMap:
+				self.__mFilePathMap[k] = sorted(self.__mFilePathMap[k], key=lambda e : e['relativepath'])
+
 			if not pCacheFile is None:
 				if not os.path.isdir(os.path.dirname(pCacheFile)):
 					os.makedirs(os.path.dirname(pCacheFile))
 				with open(pCacheFile,'w',encoding='UTF-8') as f:
 					lCacheContent = {
+						'version': self.__mCacheVersion,
+						'duplicatefiledetectionmethod': pDuplicateFileDetectionMethod.name,
 						'files':self.__mFilePathMap,
-						'sourcefolder': pBaseDir
+						'sourcefolders': self.__mBaseDirs,
+						'ignoredduplicated': lIgnoredDuplicated
 					}
 					json.dump(lCacheContent,f,sort_keys=True,indent='\t')
-		self.__mLogger.info('FileSystemXRefResolver is ready with %d files ' % (lCptr) )
+		lCptr = 0
+		for f in self.__mFilePathMap:
+			lCptr = lCptr + len(self.__mFilePathMap[f])
+		self.__mLogger.info('FileSystemXRefResolver is ready with %d files, %d duplicated were ignored ' % (lCptr, len(lCacheContent['ignoredduplicated'])) )
 
 	def __iter__(self):
 		for (k,vals) in self.__mFilePathMap.items():
 			for v in vals:
-				yield os.path.join(self.__mBaseDir,v[0])
+				yield os.path.join(self.__mBaseDirs[v['basediridx']],v['relativepath'])
 	
 	def __extractFileFolder(self, pPath):
-    	# normalize path, lowercase and remove filename
+		# normalize path, lowercase and remove filename
 		lRes = pPath.replace('\\','/').lower().split('/')[:-1]
 		lRes.reverse()
 		return lRes
@@ -648,8 +754,8 @@ class FileSystemXRefResolver(XRefResolverInteface):
 			lMatch = []
 			lCurrentMatchLen = -1
 			# look for the longest path match
-			for (lCandidate,size) in lRelPathList:
-				lCandidateFolder = self.__extractFileFolder(lCandidate)
+			for lCandidate in lRelPathList:
+				lCandidateFolder = self.__extractFileFolder(lCandidate['relativepath'])
 
 				lNewMatchedLen = 0
 				for (ref,cand) in zip(lXRefFolder,lCandidateFolder):
@@ -661,29 +767,31 @@ class FileSystemXRefResolver(XRefResolverInteface):
 					lMatch = []
 				elif lNewMatchedLen < lCurrentMatchLen:
 					continue
-				lMatch.append((lCandidate,size))
+				lMatch.append(lCandidate)
 			
 			assert(len(lMatch) > 0)
 
 			if len(lMatch) > 1 :
-				lParentFolder = self.__normalizePath(os.path.dirname(pParentFilePath))
 				# got multiple matches, favor a match that is located in the parent folder or a sub folder
 				lPreferedMatch = []
-				for (lCandidate,size) in lMatch:
-					lCandidateFolder = os.path.dirname(lCandidate)
+				for lCandidate in lMatch:
+					# add '/' to ensure that the startswith will not match a partial folder name
+					# eg : parent folder 'root/3D' candidates 'root/3D' and 'root/3D_old'
+					lParentFolder = '/%s/'% self.__normalizePath(lCandidate['basediridx'], os.path.dirname(pParentFilePath))
+					lCandidateFolder = '/%s/' % os.path.dirname(lCandidate['relativepath'])
 					if lCandidateFolder.startswith(lParentFolder):
-						lPreferedMatch.append((lCandidate,size))
+						lPreferedMatch.append(lCandidate)
 				if len(lPreferedMatch) > 0:
 					lMatch = lPreferedMatch
 			
 			if len(lMatch) > 1:
-				self.__mLogger.warning("multiple path match for xref "+pXRef+", choosing first of %s" % (lMatch))
+				self.__mLogger.warning("multiple path match for xref '%s' in file '%s', choosing first of %s" % (pXRef,pParentFilePath,lMatch))
 			lMatch = lMatch[0]
-			self.__mLogger.debug('resolve "%s" to "%s" from "%s"' % (pXRef,lMatch[0],pParentFilePath))
-			return (os.path.join(self.__mBaseDir,lMatch[0]),lMatch[1])
-	
-	def __normalizePath(self, pPath : str):
-		lRes = os.path.relpath(pPath,self.__mBaseDir).replace('\\','/')
+			self.__mLogger.debug('resolve "%s" to "%s" from "%s"' % (pXRef,lMatch['relativepath'],pParentFilePath))
+			return (os.path.join(self.__mBaseDirs[lMatch['basediridx']],lMatch['relativepath']),lMatch['size'])
+
+	def __normalizePath(self, pBaseDirIdx : int, pPath : str):
+		lRes = os.path.relpath(pPath,self.__mBaseDirs[pBaseDirIdx]).replace('\\','/')
 		if lRes == '.':
 			lRes = ''
 		return lRes
@@ -782,7 +890,7 @@ class MetadataTypeMapping:
 		}
 		lStr = lStr + "\nproposed mapping : " + json.dumps(lProposedMapping)
 		if len(self.__mMdTypes) > 128:
-			self.__mLogger.warn('detect a huge number of metadata keys, you might have indexing issues, consider reducing it')
+			self.__mLogger.warning('detect a huge number of metadata keys, you might have indexing issues, consider reducing it')
 
 		self.__mLogger.info(lStr)
 		return lProposedMapping
@@ -794,7 +902,7 @@ class MetadataTypeMapping:
 		if len(pPath) > 1:
 			if not 'properties' in lDstObj:
 				if 'type' in lDstObj and not lDstObj['type'] in ['nested','object']:
-					self.__mLogger.warn('fail to create mapping entry for %s, missing properties field for %s' % (pFullPath,pPath[0]))
+					self.__mLogger.warning('fail to create mapping entry for %s, missing properties field for %s' % (pFullPath,pPath[0]))
 					return
 				lDstObj['properties'] = {}
 			self.__createMappingEntry(lDstObj['properties'],pPath[1:],pType,pFullPath,pIndex)
@@ -822,7 +930,7 @@ class MetadataTypeMapping:
 #
 ########################################
 class Converter3dji:
-	def __init__(self, pParam : Converter3djiSettings, pCustomizer : PsCustomizerBase, pXRefSolver : XRefResolverInteface, pPsConverterSettings: PsConverterSettings, pExtraConverters, pLogger : logging.Logger):
+	def __init__(self, pParam : Converter3djiSettings, pCustomizer : PsCustomizerBase, pXRefSolver : XRefResolverInteface, pPsConverterSettings: PsConverterSettings, pExtraConverters, pLogger : logging.Logger, pDefaultProjectName = 'RenameMe'):
 		if not isinstance(pParam, Converter3djiSettings):
 			raise Exception('Invalid pParam')
 		if not isinstance(pCustomizer, PsCustomizerBase):
@@ -835,6 +943,8 @@ class Converter3dji:
 		self.__mParam = pParam
 		self.__mParam.checkValidity()
 		
+		self.__mDefaultProjectName = pDefaultProjectName
+
 		self.__mCustomizer = pCustomizer
 		self.__mCustomizer._setConverter3djiSettings(pParam)
 		self.__mPsConverterParams = pPsConverterSettings
@@ -858,7 +968,7 @@ class Converter3dji:
 			raise Exception()
 		self.__mLogger.info('CLI version : ' + lRes.stdout.decode('ascii',errors='ignore').strip())
 
-		lCmdLine = [os.path.abspath(self.__mParam.infiniteCliExe), 'generator','canbuild', self.__mParam.projectId, self.__mParam.directoryNickName,'--ifmissingcreatewithname','RenameMe']
+		lCmdLine = [os.path.abspath(self.__mParam.infiniteCliExe), 'generator','canbuild', self.__mParam.projectId, self.__mParam.directoryNickName,'--ifmissingcreatewithname',self.__mDefaultProjectName]
 		self.__mLogger.debug('Execute : "' + '" "'.join(lCmdLine) + '"')
 		lRes = subprocess.run(lCmdLine, cwd=os.path.split(os.path.abspath(self.__mParam.infiniteCliExe))[0])
 		if lRes.returncode != 0:
@@ -1075,7 +1185,7 @@ class Converter3dji:
 					lForceFileConversion = self.__mParam.forceFileProcessing
 					if not lForceFileConversion:
 						lConvResult = self._loadJsonFile(lConvResultFile)
-						if 'infos' in lConvResult and 'errors' in lConvResult['infos'] and len(lConvResult['infos']['errors']) > 1:
+						if 'infos' in lConvResult and 'errors' in lConvResult['infos'] and len(lConvResult['infos']['errors']) > 0:
 							if self.__mParam.reprocessCacheErrors:
 								self.__mLogger.info('force reprocess of ' + lConvResultFile)
 								lForceFileConversion = True
@@ -1466,7 +1576,7 @@ class CliDocumentIndexer():
 				try:
 					self.__mSubProcess.wait(timeout=180)
 				except:
-					self.__mLogger.warn('Kill doc indexer, still running after 180s')
+					self.__mLogger.warning('Kill doc indexer, still running after 180s')
 					self.__mSubProcess.kill()
 				del self.__mSubProcess
 				self.__mSubProcess = None

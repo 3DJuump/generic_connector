@@ -1,14 +1,14 @@
-FROM docker.io/bitnami/minideb:bookworm
+FROM docker.io/debian:trixie-slim
 
 # deploy deb packages
 COPY docker/tmp/*.deb /tmp/
 
-# create juumpinfinite user
-RUN adduser juumpinfinite
-RUN passwd -d juumpinfinite
-
 # set package install non interactive
 ARG DEBIAN_FRONTEND=noninteractive
+
+# update apt
+RUN apt update
+RUN apt --assume-yes upgrade
 
 # configure locale
 RUN install_packages locales
@@ -19,9 +19,16 @@ ENV LANGUAGE=en_US:en
 ENV LC_ALL=en_US.UTF-8
 RUN export
 
+# need adduser
+RUN apt --assume-yes install adduser
+
 # pre-install dependencies
 COPY docker/tmp/install_deb_dependencies.sh /tmp/install_deb_dependencies.sh
 RUN /bin/bash /tmp/install_deb_dependencies.sh
+
+# create juumpinfinite user
+RUN adduser juumpinfinite
+RUN passwd -d juumpinfinite
 
 # accept eula
 RUN echo "lib3djuump-infinite-cli lib3djuump-infinite-cli/eula string yes" > /tmp/debconf.conf

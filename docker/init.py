@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 #
-# Copyright (C) generic_connector.py 2024 AKKODIS INGENIERIE PRODUIT SAS (support@3djuump.com)
+# Copyright (C) init.py 2026 AKKODIS INGENIERIE PRODUIT SAS (support@3djuump.com)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
